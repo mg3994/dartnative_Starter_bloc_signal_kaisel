@@ -1,0 +1,927 @@
+import 'dart:async';
+
+// ignore: depend_on_referenced_packages
+import 'package:meta/meta.dart';
+
+import 'kaisel_guard.dart';
+import 'kaisel_inspector.dart' show KaiselOriginFrame;
+import 'kaisel_notifier.dart';
+import 'kaisel_route.dart';
+
+int _originSeq = 0;
+
+/// Issues the next monotonic stamp for a navigation origin, shared across
+/// every router and shell so a DevTools host can order transitions by
+/// recency. Debug-only bookkeeping; exposed via `kaisel_core/framework.dart`.
+int kaiselNextOriginSeq() => ++_originSeq;
+
+const _frameworkFramePrefixes = <String>[
+  'package:kaisel/',
+  'package:kaisel_core/',
+  'package:flutter/',
+  'package:dartnative/'
+];
+
+// The dart: SDK scheme is a library letter after the colon (`dart:async`),
+// which distinguishes it from a `foo.dart:42` file-and-line in any frame.
+final _sdkFrame = RegExp(r'dart:[a-z]');
+
+// A source location in either trace format: VM `(uri:line:col)` or web
+// `uri line:col` (colon vs whitespace before the line).
+final _frameLocation = RegExp(
+  r'((?:package:|dart:|file://)[^\s():]+\.dart)[:\s](\d+):(\d+)',
+);
+
+/// Reduces a captured navigation origin to the app call frames behind it —
+/// dropping kaisel, Flutter, and SDK frames plus async-suspension markers, and
+/// keeping the closest [limit]. Each frame keeps its display line and, when the
+/// location parses, the source uri/line/column (so a host can open it in an
+/// editor). Empty for a null trace. Exposed via `kaisel_core/framework.dart`.
+List<KaiselOriginFrame> kaiselOriginFrames(StackTrace? trace, {int limit = 5}) {
+  if (trace == null) return const <KaiselOriginFrame>[];
+  final frames = <KaiselOriginFrame>[];
+  for (final raw in trace.toString().split('\n')) {
+    final line = raw.trim();
+    if (line.isEmpty || line == '<asynchronous suspension>') continue;
+    if (_sdkFrame.hasMatch(line)) continue;
+    if (_frameworkFramePrefixes.any(line.contains)) continue;
+    final match = _frameLocation.firstMatch(line);
+    frames.add(
+      KaiselOriginFrame(
+        display: line,
+        uri: match?.group(1),
+        line: int.tryParse(match?.group(2) ?? ''),
+        column: int.tryParse(match?.group(3) ?? ''),
+      ),
+    );
+    if (frames.length >= limit) break;
+  }
+  return frames;
+}
+
+/// Non-generic view of a [KaiselRouter]'s navigation primitives.
+///
+/// Lets containers like `BranchedShellRouter` aggregate heterogeneously
+/// typed routers (e.g. `KaiselRouter<HomeRoute>` and
+/// `KaiselRouter<DiscoverRoute>`) under a single list without losing the
+/// non-typed operations they need (can-pop and pop on the active branch
+/// for back-button handling, plus type-erased stack capture/restore
+/// for URL round-trips in v0.5+). The typed router still does what it
+/// does; this is just the slice that's safe to call without knowing `R`.
+abstract class KaiselNavigator implements KaiselListenable {
+  /// Whether [pop] would actually remove a route from this router.
+  bool get canPop;
+
+  /// Pop the top route from this router. Returns `false` if the
+  /// router was already at root.
+  Future<bool> pop();
+
+  /// The router's current stack, type-erased to [KaiselRoute]. The
+  /// typed `KaiselRouter<R>.stack` returns the same data as `List<R>`;
+  /// this is the view shell containers see.
+  List<KaiselRoute> get stack;
+
+  /// Replace this router's stack from a (type-erased) list of routes.
+  /// Throws [ArgumentError] if any element is not assignable to this
+  /// router's underlying `R`. Used by [KaiselRouterDelegate] when
+  /// restoring shell state from a URL.
+  Future<void> restoreStack(List<KaiselRoute> stack);
+
+  /// The most recent no-op navigation on this router, for DevTools. Debug
+  /// only; null in release. See [KaiselRouter.debugLastNoOp].
+  KaiselNoOp? get debugLastNoOp;
+
+  /// The call site that issued this router's most recent committed
+  /// navigation, for DevTools. Debug only; null in release (and for changes
+  /// with no app call site, e.g. a system-back pop).
+  StackTrace? get debugLastTransitionOrigin;
+
+  /// A monotonic stamp paired with [debugLastTransitionOrigin], so a host can
+  /// tell which router transitioned most recently. Debug only; 0 in release.
+  int get debugLastTransitionSeq;
+
+  /// Stack positions absorbed by adaptive rendering, for DevTools. Empty for
+  /// non-adaptive routers. See [KaiselRouter.debugAbsorbedPositions].
+  Set<int> get debugAbsorbedPositions;
+
+  /// Whether this router's most recent committed change should overwrite the
+  /// browser history entry (`replaceTop` / `set`) rather than add one
+  /// (`push`). A shell container reads it from its active branch so a nested
+  /// replace is reported as a replace too. See
+  /// [KaiselRouter.replacesHistoryEntry].
+  bool get replacesHistoryEntry;
+}
+
+/// Identity-stable wrapper for a route on the stack.
+///
+/// Two value-equal routes (e.g. `const Home()` pushed twice) still need
+/// distinct identities for the [Navigator] to diff them correctly across
+/// rebuilds. The router assigns a monotonic id per entry; the delegate
+/// uses it to key the corresponding [Page]. Identity is preserved
+/// across navigations where the route at a given position is unchanged,
+/// so push/pop/replaceTop don't tear down sibling pages.
+@immutable
+class KaiselStackEntry<R extends KaiselRoute> {
+  /// Wrap [route], assigning it a process-unique identity [id].
+  KaiselStackEntry(this.route) : id = _nextId++;
+
+  /// The user-facing route.
+  final R route;
+
+  /// Identity-stable id used by the delegate to key the corresponding page.
+  final int id;
+
+  static int _nextId = 0;
+
+  @override
+  String toString() => 'KaiselStackEntry#$id($route)';
+}
+
+/// Signature for [KaiselRouter.onTransition]: called with the old and new
+/// stacks (as route values) after a stack change commits.
+typedef KaiselTransitionCallback<R extends KaiselRoute> = void Function(
+    List<R> from, List<R> to);
+
+/// The navigation stack as observable state.
+///
+/// `KaiselRouter` is the single source of truth for navigation. The
+/// `RouterDelegate` is a thin renderer over this object: it listens for
+/// changes and builds a `Navigator` with the corresponding pages.
+///
+/// All mutations go through the methods on this class. Navigation is
+/// list manipulation:
+///
+/// ```dart
+/// await router.push(const ProductDetail('sku-42'));
+/// await router.pop();
+/// await router.replaceTop(const Home());
+/// await router.set([const Home(), const Cart()]);
+/// ```
+///
+/// As of v0.2, mutations return `Future<void>` because they pass through
+/// the guard pipeline (which may be async). When no guards are
+/// registered or all guards are synchronous, the future is already
+/// complete on return and may be discarded — `router.push(x)` without
+/// an `await` works fine.
+///
+/// Mutations are serialized: calling `push(a)` then `push(b)` without
+/// awaiting still applies them in order. Each operation waits for the
+/// previous one's guards to settle before running.
+class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
+    implements KaiselNavigator {
+  /// Create a router with a single initial route, an optional guard
+  /// pipeline, and an optional [onTransition] callback.
+  KaiselRouter({
+    required R initial,
+    List<KaiselGuard<R>> guards = const [],
+    this.onTransition,
+  })  : _entries = [KaiselStackEntry<R>(initial)],
+        _guards = List<KaiselGuard<R>>.unmodifiable(guards) {
+    _recordHistory();
+  }
+
+  /// Create a router from an existing stack. Must not be empty.
+  factory KaiselRouter.fromStack(
+    List<R> stack, {
+    List<KaiselGuard<R>> guards = const [],
+    KaiselTransitionCallback<R>? onTransition,
+  }) {
+    if (stack.isEmpty) {
+      throw ArgumentError('Initial stack must contain at least one route.');
+    }
+    final router = KaiselRouter<R>._empty(
+      guards: guards,
+      onTransition: onTransition,
+    );
+    for (final r in stack) {
+      router._entries.add(KaiselStackEntry<R>(r));
+    }
+    router._recordHistory();
+    return router;
+  }
+
+  KaiselRouter._empty({required List<KaiselGuard<R>> guards, this.onTransition})
+      : _entries = [],
+        _guards = List<KaiselGuard<R>>.unmodifiable(guards);
+
+  /// Called after the stack changes, with the old and new stacks as
+  /// route values.
+  ///
+  /// Fires for every committed change — push, pop, `replaceTop`, `set`,
+  /// and Navigator-driven removals (system back) — after guards have run
+  /// and listeners have been notified. It does not fire for no-op
+  /// navigations (a proposed stack equal to the current one), on
+  /// construction, or for a modal flow's own sub-stack.
+  ///
+  /// The value model makes transitions directly comparable: a
+  /// master-detail swap is `from.length == to.length && from.last !=
+  /// to.last`. Navigating from inside the callback is safe — the new
+  /// navigation is queued like any other.
+  final KaiselTransitionCallback<R>? onTransition;
+
+  final List<KaiselStackEntry<R>> _entries;
+  final List<KaiselGuard<R>> _guards;
+  Future<void> _pending = Future<void>.value();
+
+  // Modal flow state. Multiple flows can be active simultaneously
+  // (nested modal flows). The list is a stack: flows are pushed by
+  // [run] and popped by [completeFlow]/[dismissFlow] in LIFO order.
+  final List<_ActiveFlow<R>> _flows = <_ActiveFlow<R>>[];
+
+  // Set on a flow's sub-router, pointing at the router that ran the flow.
+  // Only the host chain's root aggregates renderable flows, so [run] on a
+  // sub-router forwards up — otherwise the flow would be added to a list
+  // nothing renders and its future would never complete.
+  KaiselRouter<R>? _flowHost;
+
+  // Result channels for [pushForResult], keyed by stack-entry id. The
+  // completer is resolved when its entry leaves the stack, with any value
+  // stashed for it by a result-bearing [pop] (absent → resolves null).
+  final Map<int, Completer<Object?>> _resultCompleters =
+      <int, Completer<Object?>>{};
+  final Map<int, Object?> _resultValues = <int, Object?>{};
+
+  KaiselGuardRun<R>? _debugLastGuardRun;
+  KaiselNoOp? _debugLastNoOp;
+  static int _noOpSeq = 0;
+  Set<int> _debugAbsorbedPositions = const <int>{};
+  final List<List<R>> _debugHistory = <List<R>>[];
+  static const int _debugHistoryCap = 30;
+
+  StackTrace? _activeOrigin;
+  StackTrace? _debugLastOrigin;
+  int _debugLastOriginSeq = 0;
+
+  /// The current stack as a read-only list of routes.
+  @override
+  List<R> get stack => List<R>.unmodifiable(_entries.map((e) => e.route));
+
+  /// The route on top of the stack.
+  R get current => _entries.last.route;
+
+  /// Number of routes on the stack.
+  int get depth => _entries.length;
+
+  /// Whether a [pop] would actually remove a route.
+  @override
+  bool get canPop => _entries.length > 1;
+
+  /// Whether at least one modal flow is currently active. Equivalent
+  /// to `activeFlows.isNotEmpty`.
+  bool get hasActiveFlow => _flows.isNotEmpty;
+
+  /// All active modal flows, ordered from oldest (bottom of the
+  /// modal stack) to newest (top, rendered on top of everything
+  /// else). Empty when no flow is active. The last entry is the
+  /// flow that [completeFlow] and [dismissFlow] will resolve.
+  ///
+  /// Hosts use this to render one modal layer per flow. Each entry
+  /// exposes the flow's defining route and its sub-router. The
+  /// completer is private to [run]/[completeFlow] so callers can't
+  /// bypass the LIFO completion discipline.
+  List<KaiselActiveFlow<R>> get activeFlows =>
+      List<KaiselActiveFlow<R>>.unmodifiable(
+        _flows.map((f) => KaiselActiveFlow<R>._(f.route, f.router)),
+      );
+
+  /// Framework-facing view used by the delegate to key pages. Exposed via
+  /// `package:kaisel_core/framework.dart`, not the public barrel.
+  List<KaiselStackEntry<R>> get entries => List.unmodifiable(_entries);
+
+  /// The most recent guard-pipeline run, retained for DevTools/debugging.
+  ///
+  /// Populated only in debug builds (the recording is gated by `assert`) and
+  /// only when at least one guard ran; null in release and before any guarded
+  /// navigation. Exposed via `package:kaisel_core/framework.dart`.
+  KaiselGuardRun<R>? get debugLastGuardRun => _debugLastGuardRun;
+
+  /// The most recent no-op navigation on this router — an issued mutation
+  /// (`push` / `replaceTop` / `set` / `pushOrReplaceTop`) that produced no
+  /// change because the proposed stack was value-equal to the current one.
+  /// The classic cause is a route with fields but no `props` override. Cleared
+  /// by the next real change. Populated in debug builds only; null in release.
+  @override
+  KaiselNoOp? get debugLastNoOp => _debugLastNoOp;
+
+  /// Stack positions (0-based from the bottom) the adaptive renderer collapsed
+  /// into the page above them at the current breakpoint — the master entries
+  /// of a master-detail page. Empty for non-adaptive routers. Updated by the
+  /// adaptive build path; for DevTools only.
+  @override
+  Set<int> get debugAbsorbedPositions => _debugAbsorbedPositions;
+
+  /// Framework-facing: record the absorbed positions from an adaptive build.
+  /// Called by the adaptive renderer in debug only. Exposed via
+  /// `package:kaisel_core/framework.dart`.
+  void debugSetAbsorbedPositions(Set<int> positions) {
+    _debugAbsorbedPositions = positions;
+  }
+
+  /// A capped, debug-only history of the stacks this router has held (real
+  /// routes, oldest first), for DevTools time-travel. Empty in release.
+  List<List<R>> get debugHistory => List<List<R>>.unmodifiable(_debugHistory);
+
+  @override
+  StackTrace? get debugLastTransitionOrigin => _debugLastOrigin;
+
+  @override
+  int get debugLastTransitionSeq => _debugLastOriginSeq;
+
+  /// Captures the caller's stack as a navigation origin. Debug-only: the
+  /// `assert` side-effect is stripped in release, so it returns null and
+  /// costs nothing there.
+  StackTrace? _captureOrigin() {
+    StackTrace? origin;
+    assert(() {
+      origin = StackTrace.current;
+      return true;
+    }());
+    return origin;
+  }
+
+  /// Like [_enqueue], but tags the task with the caller's stack so a
+  /// committed change records where it came from. The origin is captured now
+  /// (the call site) and made active when the serialized task runs.
+  Future<T> _enqueueOrigin<T>(Future<T> Function() task) {
+    final origin = _captureOrigin();
+    return _enqueue(() {
+      _activeOrigin = origin;
+      return task();
+    });
+  }
+
+  void _recordHistory() {
+    assert(() {
+      _debugHistory.add(<R>[for (final entry in _entries) entry.route]);
+      if (_debugHistory.length > _debugHistoryCap) _debugHistory.removeAt(0);
+      return true;
+    }());
+  }
+
+  /// Push a route onto the top of the stack. Runs through guards.
+  Future<void> push(R route) =>
+      _enqueueOrigin(() => _navigate([...stack, route]));
+
+  /// Push [route] onto the main stack and await a typed result from it.
+  ///
+  /// Unlike [run], the route lives on this router's own stack — it is a
+  /// normal screen in the same [Navigator], so root-navigator dialogs,
+  /// shared [NavigatorObserver]s, and ordinary navigation all behave as
+  /// they do for any other route. The returned future completes when that
+  /// pushed entry leaves the stack:
+  ///
+  /// - with the value passed to [pop] (e.g. `context.pop(selectedId)`),
+  /// - with `null` if it is popped without a value, replaced by [set] /
+  ///   [replaceTop], removed by system back, or the router is disposed,
+  /// - with `null` immediately if a guard prevents it from landing on top.
+  ///
+  /// Note the contrast with [push], whose future settles when the guard
+  /// pipeline settles (i.e. once navigation is applied), not on pop.
+  Future<T?> pushForResult<T>(R route) {
+    final completer = Completer<Object?>();
+    _enqueueOrigin(() async {
+      final beforeIds = <int>{for (final e in _entries) e.id};
+      await _navigate([...stack, route]);
+      final top = _entries.isNotEmpty ? _entries.last : null;
+      if (top != null && !beforeIds.contains(top.id) && top.route == route) {
+        _resultCompleters[top.id] = completer;
+      } else if (!completer.isCompleted) {
+        // Never landed on top (a guard collapsed or redirected it).
+        completer.complete(null);
+      }
+    });
+    return completer.future.then((value) => value as T?);
+  }
+
+  /// Resolve the result completer for entry [id], if any, with the value
+  /// stashed for it (or null). Cleans up both maps for that id.
+  void _resolveResult(int id) {
+    final completer = _resultCompleters.remove(id);
+    final value = _resultValues.remove(id);
+    if (completer != null && !completer.isCompleted) completer.complete(value);
+  }
+
+  /// Pop the top route. Returns `false` if the stack has only one route
+  /// (we never pop to empty). Runs through guards.
+  ///
+  /// Concurrent pops applied rapidly each see the post-previous-pop
+  /// stack, so two pops in a row from a 3-deep stack pop both routes
+  /// rather than silently coalescing.
+  @override
+  Future<bool> pop([Object? result]) => _enqueueOrigin(() async {
+        if (!canPop) return false;
+        if (result != null) _resultValues[_entries.last.id] = result;
+        final next = stack.sublist(0, stack.length - 1);
+        await _navigate(next);
+        return true;
+      });
+
+  /// Replace the top route on the stack. Runs through guards.
+  ///
+  /// Only ever touches the top entry; the rest of the stack is
+  /// untouched.
+  Future<void> replaceTop(R route) => _enqueueOrigin(() {
+        final next = [...stack];
+        assert(next.isNotEmpty, 'replaceTop on an empty stack');
+        next[next.length - 1] = route;
+        return _navigate(next, recordNoOp: true, replacesHistory: true);
+      });
+
+  /// Push [route] onto the stack, or replace the top entry if [when]
+  /// matches the current top route.
+  ///
+  /// The canonical case is master-detail at adaptive widths. Tapping
+  /// a different item in the master should:
+  ///
+  /// - **push** the new detail if there's no detail on top yet
+  ///   (`[List]` → `[List, Detail(id)]`),
+  /// - **replace** the top entry if a detail is already there
+  ///   (`[List, Detail(other)]` → `[List, Detail(id)]`).
+  ///
+  /// Replacing instead of pushing is what gives master-detail its
+  /// in-place feel. If you always pushed, the stack would grow and
+  /// the new top entry's previous neighbour would be another
+  /// `Detail`, not `List`, so the adaptive absorbing arm wouldn't
+  /// match and the Navigator would animate a slide-in.
+  ///
+  /// [when] defaults to "replace if the current top has the same
+  /// runtime type as [route]". That works for the common sealed-
+  /// route case where every detail variant shares one type. Pass
+  /// an explicit predicate for finer control (or `(_) => false` to
+  /// force a push, equivalent to calling [push] directly).
+  Future<void> pushOrReplaceTop(R route, {bool Function(R current)? when}) {
+    final predicate = when ?? ((c) => c.runtimeType == route.runtimeType);
+    if (stack.isEmpty || !predicate(current)) {
+      return push(route);
+    }
+    return replaceTop(route);
+  }
+
+  /// Replace the entire stack. Must not be empty. Runs through guards.
+  ///
+  /// [routes] is copied eagerly so subsequent caller mutation doesn't
+  /// affect the queued navigation.
+  Future<void> set(List<R> routes) {
+    if (routes.isEmpty) {
+      throw ArgumentError('Stack must contain at least one route.');
+    }
+    final captured = List<R>.of(routes);
+    return _enqueueOrigin(() => _navigate(captured, replacesHistory: true));
+  }
+
+  /// Re-run the guard pipeline against the current stack and apply whatever
+  /// it returns.
+  ///
+  /// Guards run on stack *mutations*, but the reason to re-check one is often
+  /// that the world changed while the stack sat still — a lock timer fired, a
+  /// session expired, an entitlement lapsed, a flag flipped. This is that
+  /// trigger: the pipeline sees `(current, current)`, so the same guard that
+  /// gates navigation can append a screen (lock the app) or drop one (unlock
+  /// it) without the app encoding that policy a second time.
+  ///
+  /// Idempotent by construction: a guard that keeps returning the same stack
+  /// commits nothing. Serialized with every other mutation, so it is safe to
+  /// call from a listener while a navigation is in flight.
+  Future<void> reevaluate() => _enqueueOrigin(() => _navigate(stack));
+
+  /// Pop routes until [predicate] returns true for the top route, or
+  /// only one route remains on the stack. Runs through guards.
+  ///
+  /// The stack always keeps its root: when nothing matches, this leaves the
+  /// bottom route rather than emptying the stack.
+  Future<void> popUntil(bool Function(R route) predicate) => _enqueueOrigin(() {
+        final next = [...stack];
+        while (next.length > 1 && !predicate(next.last)) {
+          next.removeLast();
+        }
+        return _navigate(next);
+      });
+
+  /// Pop everything above the anchor [predicate] matches, then push [route]
+  /// on top of it. Runs through guards as a single mutation.
+  ///
+  /// The anchor is the **topmost** entry matching [predicate]; entries below
+  /// it are kept. When nothing matches, the stack becomes `[route]` — the
+  /// whole history is replaced, which is what "and pop until" means with no
+  /// anchor to stop at.
+  /// Like [push], this is forward navigation: it adds a browser history entry
+  /// rather than replacing one.
+  Future<void> pushAndPopUntil(
+    R route, {
+    required bool Function(R) predicate,
+  }) =>
+      _enqueueOrigin(() {
+        final anchor = stack.lastIndexWhere(predicate);
+        return _navigate([...stack.take(anchor + 1), route]);
+      });
+
+  /// Pop every route above the root. Runs through guards.
+  Future<void> popUntilRoot() => _enqueueOrigin(() => _navigate([stack.first]));
+
+  /// Used by the delegate to sync state when the navigator pops a page
+  /// (e.g. system back). Synchronous: by the time the navigator notifies
+  /// us, the page has already animated out, so we update state to match
+  /// rather than trying to kaisel it.
+  ///
+  /// Guards do **not** run on this path. Pop-driven redirects should be
+  /// implemented as listeners on app state (e.g. auth) that explicitly
+  /// call [set] or [replaceTop], not as guards.
+  ///
+  /// Framework-facing: called by the delegate, exposed via
+  /// `package:kaisel_core/framework.dart`.
+  void onPageRemoved(int id) {
+    final i = _entries.indexWhere((e) => e.id == id);
+    if (i == -1) return; // already removed
+    if (_entries.length == 1) return; // refuse to pop to empty
+    final from = onTransition == null ? null : stack;
+    _entries.removeAt(i);
+    _resolveResult(id);
+    assert(() {
+      _debugLastOrigin = null; // system back — no app call site
+      _debugLastOriginSeq = kaiselNextOriginSeq();
+      return true;
+    }());
+    notifyListeners();
+    if (from case final from?) onTransition?.call(from, stack);
+  }
+
+  /// Called by the delegate on incoming deep links / route information.
+  /// Framework-facing; exposed via `package:kaisel_core/framework.dart`.
+  Future<void> applyFromInformation(List<R> stack) =>
+      _enqueueOrigin(() => _navigate(stack));
+
+  /// Type-erased restore from a URL decode. Each element of [stack]
+  /// must be assignable to `R`; if not, throws [ArgumentError] before
+  /// touching state. Equivalent to [set] once the cast checks pass —
+  /// guards still run.
+  @override
+  Future<void> restoreStack(List<KaiselRoute> stack) {
+    final typed = <R>[];
+    for (final r in stack) {
+      if (r is! R) {
+        throw ArgumentError(
+          'restoreStack: route ${r.runtimeType} is not assignable to $R',
+        );
+      }
+      typed.add(r);
+    }
+    return set(typed);
+  }
+
+  /// Present [flow] as a modal sub-flow and await its result.
+  ///
+  /// Creates an internal [KaiselRouter] for the flow's own stack. The
+  /// flow's screens are rendered on top of the main stack by the
+  /// delegate's `modalBuilder` (you must supply one — without it,
+  /// flows have nowhere to be rendered).
+  ///
+  /// Resolves with the value passed to [completeFlow], or `null` if the
+  /// flow is dismissed without an explicit completion (e.g. by tapping
+  /// outside the modal, system back at the flow root, or [dismissFlow]).
+  ///
+  /// Nested flows are supported: calling [run] while another flow is
+  /// active pushes a new flow on top, and flows complete in LIFO order
+  /// (see [completeFlow]). This works from inside a flow too — a flow's
+  /// sub-router forwards [run] to the router that hosts it, so nested
+  /// flows always land on the overlay stack the host renders.
+  ///
+  /// Guards on the main router are **not** rerun when starting a flow
+  /// (a flow is its own transient state, not a navigation on the main
+  /// stack). The sub-router has no guards by default; pass [flowGuards]
+  /// if you need them.
+  Future<T?> run<T>(
+    KaiselModalRoute<T> flow, {
+    List<KaiselGuard<R>> flowGuards = const [],
+  }) async {
+    if (flow is! R) {
+      throw ArgumentError(
+        '${flow.runtimeType} must extend or implement $R to run as a flow.',
+      );
+    }
+    final host = _flowHost;
+    if (host != null) {
+      return host.run<T>(flow, flowGuards: flowGuards);
+    }
+    final completer = Completer<Object?>();
+    final flowRouter = KaiselRouter<R>(initial: flow as R, guards: flowGuards)
+      .._flowHost = this;
+    flowRouter.addListener(notifyListeners);
+    final entry = _ActiveFlow<R>(
+      route: flow as KaiselModalRoute<Object?>,
+      router: flowRouter,
+      completer: completer,
+    );
+    _flows.add(entry);
+    notifyListeners();
+
+    try {
+      final result = await completer.future;
+      return result as T?;
+    } finally {
+      // If dispose() ran while we were awaiting, it has already
+      // cleared the flow state (and the ChangeNotifier is now disposed,
+      // so notifyListeners would throw). Only clean up and notify if
+      // this entry is still tracked.
+      if (_flows.remove(entry)) {
+        flowRouter.removeListener(notifyListeners);
+        flowRouter.dispose();
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Resolve the topmost active modal flow with [value]. No-op if no
+  /// flow is active.
+  ///
+  /// The type parameter is for caller clarity. `completeFlow<bool>(true)`
+  /// reads better than `completeFlow(true)`. The runtime check happens
+  /// at the `await router.run<T>(...)` cast boundary.
+  ///
+  /// Nested flows resolve in LIFO order: only the topmost flow can be
+  /// completed via this API. To unwind multiple flows, complete the
+  /// topmost, await it, then complete the next.
+  void completeFlow<T>(T? value) {
+    if (_flows.isEmpty) return;
+    final completer = _flows.last.completer;
+    if (completer.isCompleted) return;
+    completer.complete(value);
+  }
+
+  /// Dismiss the topmost active modal flow with `null`. No-op if no
+  /// flow is active. Equivalent to `completeFlow<Null>(null)`.
+  void dismissFlow() => completeFlow<Null>(null);
+
+  @override
+  void dispose() {
+    // Resolve any in-flight flows so their awaiters don't hang.
+    // Iterate over a copy so the finally blocks in `run` mutating
+    // `_flows` doesn't disturb the loop.
+    for (final flow in List<_ActiveFlow<R>>.from(_flows)) {
+      if (!flow.completer.isCompleted) {
+        flow.completer.complete(null);
+      }
+      flow.router.removeListener(notifyListeners);
+      flow.router.dispose();
+    }
+    _flows.clear();
+    // Resolve any outstanding pushForResult awaiters so they don't hang.
+    for (final completer in _resultCompleters.values) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    _resultCompleters.clear();
+    _resultValues.clear();
+    super.dispose();
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() task) {
+    final next = _pending.then((_) => task());
+    _pending = next.then(_void, onError: _void);
+    return next;
+  }
+
+  static void _void(Object? _) {}
+
+  bool _replacesHistoryEntry = false;
+
+  /// Whether the most recently applied stack change should overwrite the browser
+  /// history entry (`replaceTop` / `set`) rather than add one (`push`).
+  /// The route-information provider reads this when reporting to the platform.
+  @override
+  bool get replacesHistoryEntry => _replacesHistoryEntry;
+
+  Future<void> _navigate(
+    List<R> proposed, {
+    bool recordNoOp = false,
+    bool replacesHistory = false,
+  }) async {
+    // Only flag a no-op when the caller's proposal was already value-equal to
+    // the current stack — not when a guard later collapses it.
+    final proposedNoOp = recordNoOp && _sameRoutes(stack, proposed);
+    final result = await _runGuards(stack, proposed);
+    _applyStack(
+      result,
+      recordNoOp: proposedNoOp,
+      replacesHistory: replacesHistory,
+    );
+  }
+
+  Future<List<R>> _runGuards(List<R> current, List<R> proposed) async {
+    var next = proposed;
+
+    // Debug-only trace retention: the assert side-effect is stripped in
+    // release, so the recording costs nothing in production.
+    var recording = false;
+    assert(() {
+      recording = _guards.isNotEmpty;
+      return true;
+    }());
+    final steps = recording ? <KaiselGuardStep<R>>[] : null;
+
+    for (var i = 0; i < _guards.length; i++) {
+      final before = next;
+      next = await _guards[i](current, next);
+      steps?.add(
+        KaiselGuardStep<R>(
+          label: '#$i',
+          input: List<R>.unmodifiable(before),
+          output: List<R>.unmodifiable(next),
+          changed: !_sameRoutes(before, next),
+        ),
+      );
+    }
+
+    if (steps case final s?) {
+      _debugLastGuardRun = KaiselGuardRun<R>(
+        input: List<R>.unmodifiable(proposed),
+        steps: List<KaiselGuardStep<R>>.unmodifiable(s),
+        output: List<R>.unmodifiable(next),
+      );
+    }
+    return next;
+  }
+
+  bool _sameRoutes(List<R> a, List<R> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Apply [next] to the stack with identity preservation: entries
+  /// whose route at the same position is equal keep their id. New
+  /// positions get fresh entries. This means a push only allocates
+  /// the new entry; existing pages keep their navigator state.
+  void _applyStack(
+    List<R> next, {
+    bool recordNoOp = true,
+    bool replacesHistory = false,
+  }) {
+    if (next.isEmpty) {
+      // Guards must not produce an empty stack. Refuse silently rather
+      // than crashing — the user almost certainly wants the current
+      // state preserved in this case.
+      return;
+    }
+    if (_routesEqual(_entries, next)) {
+      // A no-op; recorded for DevTools only when the caller opted in.
+      if (recordNoOp) {
+        assert(() {
+          _debugLastNoOp = KaiselNoOp(
+            seq: ++_noOpSeq,
+            top: next.last.toString(),
+            depth: next.length,
+          );
+          return true;
+        }());
+      }
+      return;
+    }
+
+    final from = onTransition == null ? null : stack;
+    final oldIds = <int>{for (final e in _entries) e.id};
+
+    final newEntries = <KaiselStackEntry<R>>[];
+    for (var i = 0; i < next.length; i++) {
+      if (i < _entries.length && _entries[i].route == next[i]) {
+        newEntries.add(_entries[i]);
+      } else {
+        newEntries.add(KaiselStackEntry<R>(next[i]));
+      }
+    }
+
+    _entries
+      ..clear()
+      ..addAll(newEntries);
+
+    // Resolve the pushForResult awaiter of any entry that left the stack.
+    final newIds = <int>{for (final e in newEntries) e.id};
+    for (final id in oldIds.difference(newIds)) {
+      _resolveResult(id);
+    }
+    assert(() {
+      _debugLastNoOp = null;
+      _debugLastOrigin = _activeOrigin;
+      _debugLastOriginSeq = kaiselNextOriginSeq();
+      return true;
+    }());
+    _replacesHistoryEntry = replacesHistory;
+    _recordHistory();
+    notifyListeners();
+    if (from != null) onTransition?.call(from, stack);
+  }
+
+  bool _routesEqual(List<KaiselStackEntry<R>> entries, List<R> next) {
+    if (entries.length != next.length) return false;
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].route != next[i]) return false;
+    }
+    return true;
+  }
+}
+
+/// Internal: state for one active modal flow. The router holds a
+/// list of these as a LIFO stack. Each carries the defining route,
+/// the sub-router driving its screens, and the completer that the
+/// `await router.run<T>(...)` is waiting on.
+class _ActiveFlow<R extends KaiselRoute> {
+  _ActiveFlow({
+    required this.route,
+    required this.router,
+    required this.completer,
+  });
+
+  final KaiselModalRoute<Object?> route;
+  final KaiselRouter<R> router;
+  final Completer<Object?> completer;
+}
+
+/// A read-only view of one entry in the active modal flow stack.
+///
+/// Exposed by [KaiselRouter.activeFlows] so hosts can render one modal
+/// layer per active flow. The flow's defining route and its
+/// sub-router are visible here; the completer is private to the
+/// router so callers can't bypass the LIFO completion discipline.
+@immutable
+class KaiselActiveFlow<R extends KaiselRoute> {
+  const KaiselActiveFlow._(this.route, this.router);
+
+  /// The flow's defining route (the route passed to
+  /// [KaiselRouter.run]). Type-erased to `KaiselModalRoute<Object?>`;
+  /// the original `T` is recovered at the `await` boundary.
+  final KaiselModalRoute<Object?> route;
+
+  /// The sub-router driving the flow's screens.
+  final KaiselRouter<R> router;
+}
+
+/// A recorded run of the guard pipeline, retained for debugging.
+///
+/// Captures the proposed stack going in, each guard's effect in pipeline
+/// order, and the final stack out. Populated by
+/// [KaiselRouter.debugLastGuardRun] in debug builds only.
+@immutable
+class KaiselGuardRun<R extends KaiselRoute> {
+  /// Create a guard-run record.
+  const KaiselGuardRun({
+    required this.input,
+    required this.steps,
+    required this.output,
+  });
+
+  /// The proposed stack going into the pipeline.
+  final List<R> input;
+
+  /// One step per guard, in pipeline order.
+  final List<KaiselGuardStep<R>> steps;
+
+  /// The final stack the pipeline produced.
+  final List<R> output;
+}
+
+/// A recorded no-op navigation, retained for debugging.
+///
+/// Produced when an issued mutation leaves the stack unchanged because the
+/// proposed top is value-equal to the current top — typically a route with
+/// fields but no `props` override. Surfaced by [KaiselRouter.debugLastNoOp].
+@immutable
+class KaiselNoOp {
+  /// Create a no-op record.
+  const KaiselNoOp({required this.seq, required this.top, required this.depth});
+
+  /// A monotonically increasing sequence number, so consumers can tell a new
+  /// no-op from a stale one across snapshots.
+  final int seq;
+
+  /// The `toString()` of the route the navigation tried to land on. A route
+  /// missing `props` renders without its fields here, which is itself a tell.
+  final String top;
+
+  /// The depth the stack would have had.
+  final int depth;
+}
+
+/// One guard's effect within a [KaiselGuardRun].
+@immutable
+class KaiselGuardStep<R extends KaiselRoute> {
+  /// Create a guard-step record.
+  const KaiselGuardStep({
+    required this.label,
+    required this.input,
+    required this.output,
+    required this.changed,
+  });
+
+  /// Best-effort label. Guards are usually anonymous closures, so this is
+  /// the pipeline index, e.g. `#0`.
+  final String label;
+
+  /// The stack this guard received.
+  final List<R> input;
+
+  /// The stack this guard produced.
+  final List<R> output;
+
+  /// Whether this guard changed the stack.
+  final bool changed;
+}

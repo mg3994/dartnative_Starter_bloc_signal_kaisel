@@ -1,3 +1,6 @@
+# Please DO consider respective License for all those bloc signals and kaisel as i am doing some hit and run , i can't include their compliences here 
+
+
 # dartnative starter
 
 A skeleton app you can build on. It is extracted from the first dartnative
