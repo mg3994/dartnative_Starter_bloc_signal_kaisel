@@ -1,0 +1,73 @@
+import 'package:dartnative/dartnative.dart'
+    show StatelessWidget, BuildContext, Widget;
+
+import '../packages/bloc_signals/bloc_signals.dart';
+import 'bloc_signal_builder.dart';
+import 'bloc_signal_listener.dart';
+import 'bloc_signal_provider.dart';
+// import 'package:flutter/widgets.dart'; // no use of flutter
+
+/// A widget that combines a [BlocSignalBuilder] and [BlocSignalListener]
+/// into one.
+///
+/// Example:
+/// ```dart
+/// BlocSignalConsumer<CounterBloc, int>(
+///   listener: (context, state) {
+///     if (state == 10) {
+///       showSnackBar(context, 'Limit reached!');
+///     }
+///   },
+///   builder: (context, state) {
+///     return Text('Count: $state');
+///   },
+/// )
+/// ```
+class BlocSignalConsumer<T extends BlocSignalBase<S>, S>
+    extends StatelessWidget {
+  /// Creates a [BlocSignalConsumer] widget.
+  const BlocSignalConsumer({
+    required this.builder,
+    required this.listener,
+    this.bloc,
+    this.buildWhen,
+    this.listenWhen,
+    super.key,
+  });
+
+  /// The bloc to listen and build from. If null, it is looked up from the
+  /// widget tree.
+  final T? bloc;
+
+  /// The builder function that rebuilds when the state changes.
+  final Widget Function(BuildContext context, S state) builder;
+
+  /// The callback that runs whenever the state changes.
+  final void Function(BuildContext context, S state) listener;
+
+  /// An optional predicate function that determines whether [builder] should
+  /// rebuild.
+  final bool Function(S previous, S current)? buildWhen;
+
+  /// A function that determines whether the [listener] should be called.
+  ///
+  /// Defaults to null, in which case the listener will be called on every
+  /// change.
+  final bool Function(S previous, S current)? listenWhen;
+
+  @override
+  Widget build(BuildContext context) {
+    final effectiveBloc = bloc ?? BlocSignalProvider.of<T>(context);
+
+    return BlocSignalListener<T, S>(
+      bloc: effectiveBloc,
+      listener: listener,
+      listenWhen: listenWhen,
+      child: BlocSignalBuilder<T, S>(
+        bloc: effectiveBloc,
+        buildWhen: buildWhen,
+        builder: builder,
+      ),
+    );
+  }
+}
