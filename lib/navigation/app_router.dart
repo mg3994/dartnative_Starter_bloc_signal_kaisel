@@ -27,9 +27,13 @@ AppRoute resolveInitialRoute() {
 }
 
 class App extends StatefulWidget {
-  const App({super.key, required this.initialRoute});
+  const App({super.key, required this.initialRoute, this.deviceDetails});
 
   final AppRoute initialRoute;
+  // Optional device details string, for display in the About screen. This is
+  // passed from the native side, which can query the OS for more details than
+  // the Dart side can.
+  final String? deviceDetails;
 
   @override
   State<App> createState() => _AppState();
@@ -49,7 +53,7 @@ class _AppState extends State<App> {
       onBack: _handleBack,
       builder: (context, route) {
         return switch (route) {
-          OnboardingRoute() => const OnboardingScreen(),
+          OnboardingRoute() => OnboardingScreen(deviceDetails: widget.deviceDetails),
           CreateProfileRoute(:final prefillName) => CreateProfileScreen(
             prefillName: prefillName,
           ),
@@ -76,7 +80,7 @@ class _AppState extends State<App> {
     final previous = _lastRootBack;
     if (previous != null &&
         now.difference(previous) <= const Duration(seconds: 2)) {
-      exit(0);
+      SystemNavigator.pop();
     }
     _lastRootBack = now;
     return true;

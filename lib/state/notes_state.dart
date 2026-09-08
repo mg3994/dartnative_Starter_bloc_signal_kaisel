@@ -1,9 +1,9 @@
 import 'package:dartnative/dartnative.dart' show ChangeNotifier, dnLog;
 
-import '../packages/bloc_signals_dn/packages/bloc_signals/signals_core/signals_core.dart'
+import '../packages/bloc_signals_dn/packages/bloc_signals/packages/signals_core/signals_core.dart'
     show Signal, signal;
 
-export '../packages/bloc_signals_dn/packages/bloc_signals/signals_core/signals_core.dart'
+export '../packages/bloc_signals_dn/packages/bloc_signals/packages/signals_core/signals_core.dart'
     show SignalWatch;
 
 import '../db/local_database.dart';

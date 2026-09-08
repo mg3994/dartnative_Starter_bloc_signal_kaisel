@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:dartnative/dartnative.dart' hide App;
 import 'package:dartnative_skia/dartnative_skia.dart';
 import 'package:dartnative_keys/dartnative_keys.dart';
 import 'package:dartnative_supabase/dartnative_supabase.dart' hide AuthState;
+import 'package:device_info_kit/device_info_kit.dart';
 
 import 'api/auth_service.dart';
 import 'config.dart';
@@ -98,7 +100,22 @@ Future<void> main() async {
       }
 
       dnLog('main: [boot] runApp');
-      runApp(App(initialRoute: resolveInitialRoute()));
+      //
+      final deviceInfo = DeviceInfoPlugin();
+
+      String deviceDetails = 'Unknown device';
+      if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        deviceDetails = '${iosInfo.name}, iOS ${iosInfo.systemVersion}';
+      } else if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        deviceDetails =
+            '${androidInfo.model}, Android ${androidInfo.version.release}';
+      }
+      //
+      runApp(
+        App(initialRoute: resolveInitialRoute(), deviceDetails: deviceDetails),
+      );
     },
     verbose: false,
     saveToFile: true,

@@ -2,7 +2,7 @@ import 'package:dartnative/dartnative.dart'
     show StatefulWidget, BuildContext, SizedBox, Widget, State, VoidCallback;
 
 import '../packages/bloc_signals/bloc_signals.dart';
-import '../packages/bloc_signals/signals_core/signals_core.dart' show effect;
+import '../packages/bloc_signals/packages/signals_core/signals_core.dart' show effect;
 import 'bloc_signal_provider.dart';
 
 /// A widget that listens to a [BlocSignal] and runs a callback

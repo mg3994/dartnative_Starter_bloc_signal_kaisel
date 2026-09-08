@@ -17,6 +17,7 @@
 //   • dartnative_shared_preferences
 //   • dartnative_social_sign_in
 //   • dartnative_url_launcher
+//   • device_info_kit
 
 import 'dart:io' show Platform;
 
@@ -27,6 +28,7 @@ import 'package:dartnative_keys/dartnative_keys.dart';
 import 'package:dartnative_shared_preferences/dartnative_shared_preferences.dart';
 import 'package:dartnative_social_sign_in/social_sign_in.dart';
 import 'package:dartnative_url_launcher/dartnative_url_launcher.dart';
+import 'package:device_info_kit/device_info_kit.dart';
 
 abstract final class DartNativePluginRegistrant {
   /// Registers the platform bindings and loads every DartNative plugin's
@@ -54,6 +56,7 @@ abstract final class DartNativePluginRegistrant {
       'dartnative_sqlite',
       'dartnative_supabase',
       'dartnative_url_launcher',
+      'device_info_kit',
     ]);
     registerNativeBindings(
       Platform.isAndroid
@@ -72,6 +75,9 @@ abstract final class DartNativePluginRegistrant {
     });
     _load('dartnative_url_launcher', () {
       UrlLauncherFFIBindings.loadSymbols();
+    });
+    _load('device_info_kit', () {
+      DeviceInfoFFIBindings.loadSymbols();
     });
   }
 

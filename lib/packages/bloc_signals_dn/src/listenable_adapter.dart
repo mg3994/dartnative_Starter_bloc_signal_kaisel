@@ -2,7 +2,7 @@ import 'package:dartnative/dartnative.dart'
     show Listenable, ValueListenable, ValueNotifier;
 
 import '../packages/bloc_signals/bloc_signals.dart';
-import '../packages/bloc_signals/signals_core/signals_core.dart'
+import '../packages/bloc_signals/packages/signals_core/signals_core.dart'
     show SignalOptions;
 
 /// A reactive state container wrapper that adapts an underlying DartNative

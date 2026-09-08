@@ -230,7 +230,9 @@ class _NotesPreviewState extends State<_NotesPreview>
 /// When the app has no Supabase keys yet, the demo button is the only way
 /// in, so the project works the moment it is cloned.
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key});
+  const OnboardingScreen({super.key, this.deviceDetails});
+
+  final String? deviceDetails;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -416,6 +418,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                 context: context,
                                 title: 'Sign in needs your keys',
                                 message:
+                                    "${widget.deviceDetails != null ? '${widget.deviceDetails}\n\n' : ''}"
                                     'Add your Supabase URL and '
                                     'publishable key to the .dnkeys file, '
                                     'then this button signs users in for '

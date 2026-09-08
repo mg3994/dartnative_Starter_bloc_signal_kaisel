@@ -11,7 +11,7 @@ import 'package:dartnative/dartnative.dart'
         StatelessWidget;
 
 import '../packages/bloc_signals/bloc_signals.dart';
-import '../packages/bloc_signals/signals_core/signals_core.dart'
+import '../packages/bloc_signals/packages/signals_core/signals_core.dart'
     show SignalWatch;
 // import 'package:flutter/widgets.dart';
 // import 'package:signals_flutter/signals_flutter.dart';

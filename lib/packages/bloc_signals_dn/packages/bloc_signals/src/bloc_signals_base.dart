@@ -3,7 +3,7 @@ import 'dart:async';
 import 'bloc_signal_mixin.dart';
 import 'change.dart';
 import 'cubit_signal_mixin.dart';
-import '../signals_core/signals_core.dart'
+import '../packages/signals_core/signals_core.dart'
     show EffectOptions, ReadonlySignal, SignalOptions;
 // ignore: depend_on_referenced_packages
 import 'package:meta/meta.dart';

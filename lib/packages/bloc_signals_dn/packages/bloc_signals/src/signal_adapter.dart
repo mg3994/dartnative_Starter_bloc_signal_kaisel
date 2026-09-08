@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'bloc_signals_base.dart';
-import '../signals_core/signals_core.dart';
+import '../packages/signals_core/signals_core.dart';
 
 /// A reactive state container wrapper that adapts an underlying
 /// [ReadonlySignal] (for example a [Signal], [Computed], [FutureSignal],

@@ -35,6 +35,9 @@ dependencies:
   crypto: ^3.0.0
   meta: ^1.16.0
 
+  device_info_kit:
+    path: packages/device_info_kit
+
 dev_dependencies:
   lints: ^6.0.0
   image: ^4.0.0

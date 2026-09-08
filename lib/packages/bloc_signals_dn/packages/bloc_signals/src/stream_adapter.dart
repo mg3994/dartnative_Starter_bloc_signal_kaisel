@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'bloc_signals_base.dart';
 import 'signal_adapter.dart';
-import '../signals_core/signals_core.dart';
+import '../packages/signals_core/signals_core.dart';
 
 /// Extension methods on [BlocSignalBase] to convert reactive state emissions
 /// into a standard Dart multi-subscription [Stream].

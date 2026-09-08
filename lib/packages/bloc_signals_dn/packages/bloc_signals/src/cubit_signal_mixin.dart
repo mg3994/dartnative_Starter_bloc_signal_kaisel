@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../signals_core/signals_core.dart'
+import '../packages/signals_core/signals_core.dart'
     show
         EffectOptions,
         ReadonlySignal,

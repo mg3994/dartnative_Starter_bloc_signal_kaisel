@@ -1,6 +1,6 @@
 import 'package:test/test.dart';
 
-import 'package:dartnative_starter/packages/bloc_signals_dn/packages/bloc_signals/signals_core/signals_core.dart';
+import 'package:dartnative_starter/packages/bloc_signals_dn/packages/bloc_signals/packages/signals_core/signals_core.dart';
 
 void main() {
   test('signal updates subscribers and suppresses equal values', () {
