@@ -34,11 +34,21 @@ class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<HomeScreen> createState() => HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class HomeScreenState extends State<HomeScreen> {
   _Section _section = _Section.home;
+  BuildContext? _scaffoldDescendantContext;
+  bool _drawerOpen = false;
+
+  bool handleBack() {
+    if (_drawerOpen && _scaffoldDescendantContext != null) {
+      Scaffold.of(_scaffoldDescendantContext!).closeDrawer();
+      return true;
+    }
+    return false;
+  }
 
   static const _titles = {
     _Section.home: 'Home',
@@ -49,18 +59,14 @@ class _HomeScreenState extends State<HomeScreen> {
   };
 
   Future<void> _signOut() async {
-    // The root router watches auth state: when the session ends it swaps
-    // the root back to the onboarding and clears pushed routes. No manual
-    // navigation needed here.
+    // The app-level Kaisel coordinator resets the stack when auth ends.
     await AuthService.signOut();
   }
 
   Widget _body() {
     switch (_section) {
       case _Section.home:
-        return _HomeSection(
-          onOpenSection: (s) => setState(() => _section = s),
-        );
+        return _HomeSection(onOpenSection: (s) => setState(() => _section = s));
       case _Section.notes:
         return const NotesView();
       case _Section.favorites:
@@ -92,6 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
       // The screen lifts and slides over a drawer that stays put, rather
       // than the two travelling together.
       drawerStyle: DrawerStyle.slideOver,
+      onDrawerChanged: (open) => _drawerOpen = open,
       drawer: _AppDrawer(
         selected: _section,
         onSelect: (s) {
@@ -102,10 +109,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       appBar: AppBar(
         leading: Builder(
-          builder: (context) => IconButton(
-            icon: Icon(MaterialSymbolsRounded.menu, color: p.text),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
+          builder: (context) {
+            _scaffoldDescendantContext = context;
+            return IconButton(
+              icon: Icon(MaterialSymbolsRounded.menu, color: p.text),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            );
+          },
         ),
         title: Text(
           _titles[_section]!,
@@ -168,17 +178,14 @@ class _HomeSection extends StatelessWidget {
           'quickly build dartnative apps: sqlite db, database versioning, '
           'sharing state across screens, UI reactive updates, sign in, '
           'cache, theming, drawer and more.',
-          style: TextStyle(
-            color: p.textSoft,
-            fontSize: 15,
-            height: 1.5,
-          ),
+          style: TextStyle(color: p.textSoft, fontSize: 15, height: 1.5),
         ),
         const SizedBox(height: 24),
         _HomeCard(
           icon: MaterialSymbolsRounded.description,
           title: 'Notes',
-          subtitle: 'Notes kept in SQLite and written in a native sheet. '
+          subtitle:
+              'Notes kept in SQLite and written in a native sheet. '
               'Shows the state plus storage pattern, and a signal per note '
               'so editing one repaints one row.',
           onTap: () => onOpenSection(_Section.notes),
@@ -187,7 +194,8 @@ class _HomeSection extends StatelessWidget {
         _HomeCard(
           icon: MaterialSymbolsRounded.favorite,
           title: 'Favorites',
-          subtitle: 'The notes you hearted, read from the same notifier '
+          subtitle:
+              'The notes you hearted, read from the same notifier '
               'Notes uses. Shows two sections sharing one source of truth '
               'with nothing to keep in sync.',
           onTap: () => onOpenSection(_Section.favorites),
@@ -196,7 +204,8 @@ class _HomeSection extends StatelessWidget {
         _HomeCard(
           icon: MaterialSymbolsRounded.person,
           title: 'Account and Notifications',
-          subtitle: 'Empty on purpose. Copy the shape of Notes and make '
+          subtitle:
+              'Empty on purpose. Copy the shape of Notes and make '
               'them yours.',
           onTap: () => onOpenSection(_Section.account),
         ),
@@ -207,7 +216,8 @@ class _HomeSection extends StatelessWidget {
           builder: (context) => _HomeCard(
             icon: MaterialSymbolsRounded.menu,
             title: 'The drawer',
-            subtitle: 'Swipe from the left edge, or tap the menu button. '
+            subtitle:
+                'Swipe from the left edge, or tap the menu button. '
                 'Sections switch in place, the Website item hands a URL to '
                 'the browser.',
             onTap: () => Scaffold.of(context).openDrawer(),
@@ -309,11 +319,11 @@ class _AppDrawer extends StatelessWidget {
     }
 
     Widget item(_Section section, IconData icon, String label) => _DrawerItem(
-          icon: icon,
-          label: label,
-          selected: section == selected,
-          onTap: () => go(() => onSelect(section)),
-        );
+      icon: icon,
+      label: label,
+      selected: section == selected,
+      onTap: () => go(() => onSelect(section)),
+    );
 
     return Drawer(
       backgroundColor: p.drawerBg,
@@ -363,14 +373,26 @@ class _AppDrawer extends StatelessWidget {
                 const SizedBox(height: 8),
                 // Sections: switch the home body in place.
                 item(_Section.home, MaterialSymbolsRounded.home, 'Home'),
-                item(_Section.notes, MaterialSymbolsRounded.description,
-                    'Notes'),
-                item(_Section.favorites, MaterialSymbolsRounded.favorite,
-                    'Favorites'),
                 item(
-                    _Section.account, MaterialSymbolsRounded.person, 'Account'),
-                item(_Section.notifications,
-                    MaterialSymbolsRounded.notifications, 'Notifications'),
+                  _Section.notes,
+                  MaterialSymbolsRounded.description,
+                  'Notes',
+                ),
+                item(
+                  _Section.favorites,
+                  MaterialSymbolsRounded.favorite,
+                  'Favorites',
+                ),
+                item(
+                  _Section.account,
+                  MaterialSymbolsRounded.person,
+                  'Account',
+                ),
+                item(
+                  _Section.notifications,
+                  MaterialSymbolsRounded.notifications,
+                  'Notifications',
+                ),
                 // A link, not a screen: the system browser takes it from here.
                 // The drawer deliberately stays OPEN. Leaving for another app is
                 // not navigation inside this one, so coming back should show the

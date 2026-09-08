@@ -33,6 +33,7 @@ dependencies:
 
   # Used by the Apple sign in nonce (sha256).
   crypto: ^3.0.0
+  meta: ^1.16.0
 
 dev_dependencies:
   lints: ^6.0.0

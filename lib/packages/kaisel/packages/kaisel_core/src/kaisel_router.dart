@@ -19,7 +19,7 @@ const _frameworkFramePrefixes = <String>[
   'package:kaisel/',
   'package:kaisel_core/',
   'package:flutter/',
-  'package:dartnative/'
+  'package:dartnative/',
 ];
 
 // The dart: SDK scheme is a library letter after the colon (`dart:async`),
@@ -139,8 +139,8 @@ class KaiselStackEntry<R extends KaiselRoute> {
 
 /// Signature for [KaiselRouter.onTransition]: called with the old and new
 /// stacks (as route values) after a stack change commits.
-typedef KaiselTransitionCallback<R extends KaiselRoute> = void Function(
-    List<R> from, List<R> to);
+typedef KaiselTransitionCallback<R extends KaiselRoute> =
+    void Function(List<R> from, List<R> to);
 
 /// The navigation stack as observable state.
 ///
@@ -175,8 +175,8 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
     required R initial,
     List<KaiselGuard<R>> guards = const [],
     this.onTransition,
-  })  : _entries = [KaiselStackEntry<R>(initial)],
-        _guards = List<KaiselGuard<R>>.unmodifiable(guards) {
+  }) : _entries = [KaiselStackEntry<R>(initial)],
+       _guards = List<KaiselGuard<R>>.unmodifiable(guards) {
     _recordHistory();
   }
 
@@ -201,8 +201,8 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
   }
 
   KaiselRouter._empty({required List<KaiselGuard<R>> guards, this.onTransition})
-      : _entries = [],
-        _guards = List<KaiselGuard<R>>.unmodifiable(guards);
+    : _entries = [],
+      _guards = List<KaiselGuard<R>>.unmodifiable(guards);
 
   /// Called after the stack changes, with the old and new stacks as
   /// route values.
@@ -409,23 +409,23 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
   /// rather than silently coalescing.
   @override
   Future<bool> pop([Object? result]) => _enqueueOrigin(() async {
-        if (!canPop) return false;
-        if (result != null) _resultValues[_entries.last.id] = result;
-        final next = stack.sublist(0, stack.length - 1);
-        await _navigate(next);
-        return true;
-      });
+    if (!canPop) return false;
+    if (result != null) _resultValues[_entries.last.id] = result;
+    final next = stack.sublist(0, stack.length - 1);
+    await _navigate(next);
+    return true;
+  });
 
   /// Replace the top route on the stack. Runs through guards.
   ///
   /// Only ever touches the top entry; the rest of the stack is
   /// untouched.
   Future<void> replaceTop(R route) => _enqueueOrigin(() {
-        final next = [...stack];
-        assert(next.isNotEmpty, 'replaceTop on an empty stack');
-        next[next.length - 1] = route;
-        return _navigate(next, recordNoOp: true, replacesHistory: true);
-      });
+    final next = [...stack];
+    assert(next.isNotEmpty, 'replaceTop on an empty stack');
+    next[next.length - 1] = route;
+    return _navigate(next, recordNoOp: true, replacesHistory: true);
+  });
 
   /// Push [route] onto the stack, or replace the top entry if [when]
   /// matches the current top route.
@@ -469,6 +469,9 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
     return _enqueueOrigin(() => _navigate(captured, replacesHistory: true));
   }
 
+  /// Replace the entire stack with [route].
+  Future<void> replaceAll(R route) => set([route]);
+
   /// Re-run the guard pipeline against the current stack and apply whatever
   /// it returns.
   ///
@@ -490,12 +493,12 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
   /// The stack always keeps its root: when nothing matches, this leaves the
   /// bottom route rather than emptying the stack.
   Future<void> popUntil(bool Function(R route) predicate) => _enqueueOrigin(() {
-        final next = [...stack];
-        while (next.length > 1 && !predicate(next.last)) {
-          next.removeLast();
-        }
-        return _navigate(next);
-      });
+    final next = [...stack];
+    while (next.length > 1 && !predicate(next.last)) {
+      next.removeLast();
+    }
+    return _navigate(next);
+  });
 
   /// Pop everything above the anchor [predicate] matches, then push [route]
   /// on top of it. Runs through guards as a single mutation.
@@ -509,11 +512,10 @@ class KaiselRouter<R extends KaiselRoute> extends KaiselChangeNotifier
   Future<void> pushAndPopUntil(
     R route, {
     required bool Function(R) predicate,
-  }) =>
-      _enqueueOrigin(() {
-        final anchor = stack.lastIndexWhere(predicate);
-        return _navigate([...stack.take(anchor + 1), route]);
-      });
+  }) => _enqueueOrigin(() {
+    final anchor = stack.lastIndexWhere(predicate);
+    return _navigate([...stack.take(anchor + 1), route]);
+  });
 
   /// Pop every route above the root. Runs through guards.
   Future<void> popUntilRoot() => _enqueueOrigin(() => _navigate([stack.first]));

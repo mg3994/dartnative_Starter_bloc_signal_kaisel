@@ -4,12 +4,12 @@ import 'dart:io' show Platform;
 import 'package:dartnative/dartnative.dart';
 
 import '../api/auth_service.dart';
+import '../packages/kaisel/kaisel.dart';
+import '../router.dart';
 import '../config.dart';
 import '../theme.dart';
 import '../utils/constants.dart';
 import '../utils/shared_prefs.dart';
-import 'create_profile_screen.dart';
-import 'home_screen.dart';
 
 /// A short slide.
 class _Slide {
@@ -64,8 +64,11 @@ const _previewNotes = <List<(String, bool)>>[
 /// from the dark palette because this screen is dark whatever the app
 /// theme says.
 class _PreviewCard extends StatelessWidget {
-  const _PreviewCard(
-      {required this.text, required this.color, required this.favorite});
+  const _PreviewCard({
+    required this.text,
+    required this.color,
+    required this.favorite,
+  });
 
   final String text;
   final Color color;
@@ -254,15 +257,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     }
   }
 
-  void _navigate(Widget screen, String routeName) {
-    // The name (PageRoute.settings) keeps the screen on the stack across
-    // hot restarts; unnamed routes are dropped from the replay.
-    Navigator.pushReplacement(
-      context,
-      PageRoute(builder: (_) => screen, settings: routeName),
-    );
-  }
-
   Future<void> _onSignIn() async {
     if (_signInInFlight) return;
     setState(() => _signInInFlight = true);
@@ -276,10 +270,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
       // Apple sends the name only on the very first sign in. On later sign
       // ins fall back to the metadata AuthService saved back then.
-      final providerName = [result.givenName, result.familyName]
-          .whereType<String>()
-          .where((s) => s.isNotEmpty)
-          .join(' ');
+      final providerName = [
+        result.givenName,
+        result.familyName,
+      ].whereType<String>().where((s) => s.isNotEmpty).join(' ');
       final meta = AuthService.userMetadata;
       final prefillName = providerName.isNotEmpty
           ? providerName
@@ -292,11 +286,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (profile != null && (profile.username?.isNotEmpty ?? false)) {
         await SharedPrefs.instance.setBool(kPrefOnboardingComplete, true);
         if (!mounted) return;
-        _navigate(const HomeScreen(), '/home');
+        await context.replaceTop<AppRoute>(const HomeRoute());
       } else {
-        _navigate(
-          CreateProfileScreen(prefillName: prefillName),
-          '/create_profile',
+        await context.replaceTop<AppRoute>(
+          CreateProfileRoute(prefillName: prefillName),
         );
       }
     } catch (e) {
@@ -317,7 +310,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!mounted) return;
     await SharedPrefs.instance.setBool(kPrefOnboardingComplete, true);
     if (!mounted) return;
-    _navigate(const HomeScreen(), '/home');
+    await context.replaceTop<AppRoute>(const HomeRoute());
   }
 
   @override
@@ -400,8 +393,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       title: _signInInFlight
                           ? 'Signing in...'
                           : Platform.isIOS
-                              ? 'Sign in with Apple'
-                              : 'Sign in with Google',
+                          ? 'Sign in with Apple'
+                          : 'Sign in with Google',
                       color: const Color(0xFFFFFFFF),
                       foregroundColor: const Color(0xFF101014),
                       height: 50,
@@ -422,7 +415,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               showAlert(
                                 context: context,
                                 title: 'Sign in needs your keys',
-                                message: 'Add your Supabase URL and '
+                                message:
+                                    'Add your Supabase URL and '
                                     'publishable key to the .dnkeys file, '
                                     'then this button signs users in for '
                                     'real. The README walks through it.',

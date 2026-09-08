@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:dartnative/dartnative.dart';
+import 'package:dartnative/dartnative.dart' hide App;
 import 'package:dartnative_skia/dartnative_skia.dart';
 import 'package:dartnative_keys/dartnative_keys.dart';
 import 'package:dartnative_supabase/dartnative_supabase.dart' hide AuthState;
@@ -8,11 +8,11 @@ import 'package:dartnative_supabase/dartnative_supabase.dart' hide AuthState;
 import 'api/auth_service.dart';
 import 'config.dart';
 import 'dartnative_plugin_registrant.dart';
+import 'navigation/app_router.dart';
 import 'repositories/app_repository.dart';
 import 'screens/create_profile_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
-import 'state/auth_state.dart' show AuthStatus;
 import 'utils/constants.dart';
 import 'utils/shared_prefs.dart';
 
@@ -82,8 +82,9 @@ Future<void> main() async {
             anonKey: AppConfig.supabaseAnonKey,
           );
           AuthService.initialize();
-          await AppRepository.authState
-              .waitUntilResolved(const Duration(seconds: 3));
+          await AppRepository.authState.waitUntilResolved(
+            const Duration(seconds: 3),
+          );
           // A restored session needs the profile too; do not block the
           // first frame on it, the state notifies when it lands.
           if (AuthService.isAuthenticated) {
@@ -97,98 +98,9 @@ Future<void> main() async {
       }
 
       dnLog('main: [boot] runApp');
-      runApp(const App());
+      runApp(App(initialRoute: resolveInitialRoute()));
     },
     verbose: false,
     saveToFile: true,
   );
-}
-
-class App extends StatelessWidget {
-  const App({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const _RootRouter();
-  }
-}
-
-/// Decides which screen the runApp root hosts.
-///
-/// In dartnative the runApp child and the Navigator's pushed routes are two
-/// independent layers: routes stack on top of the root child, and nothing
-/// can remove the root child. So this router must not re-decide its child
-/// on every auth notify, or the same screen can end up alive twice (once
-/// as the root child, once as a pushed route).
-///
-/// It acts only on real transitions:
-///  - cold start: decide once from auth state and persisted flags;
-///  - signed out: swap in a fresh onboarding (a new key forces initState
-///    to run again) and clear every pushed route;
-///  - a session that resolves late (slow network at boot): upgrade the
-///    child only while nothing has been pushed yet.
-/// Everything else returns the same memoized child, which the framework
-/// skips as unchanged.
-class _RootRouter extends StatefulWidget {
-  const _RootRouter();
-
-  @override
-  State<_RootRouter> createState() => _RootRouterState();
-}
-
-class _RootRouterState extends State<_RootRouter> {
-  /// The memoized root child. Null until the cold start decision.
-  Widget? _child;
-
-  /// True once an authenticated status has been observed. Lets us detect
-  /// the authenticated to unauthenticated transition (a real sign out)
-  /// without tripping on transient loading states.
-  bool _wasAuthenticated = false;
-
-  Widget _decideScreen() {
-    if (AppRepository.authState.isAuthenticated) {
-      final onboarded =
-          SharedPrefs.instance.getBool(kPrefOnboardingComplete) ?? false;
-      if (!onboarded) return const OnboardingScreen();
-      final hasProfile =
-          AuthService.currentUser?.username?.isNotEmpty ?? false;
-      return hasProfile ? const HomeScreen() : const CreateProfileScreen();
-    }
-    return const OnboardingScreen();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = AppRepository.authState..watch(context);
-    final status = auth.status;
-
-    if (_child == null) {
-      // Cold start: decide once.
-      _wasAuthenticated = status == AuthStatus.authenticated;
-      _child = _decideScreen();
-      dnLog('main: [router] cold start -> ${_child.runtimeType}');
-    } else if (_wasAuthenticated && status == AuthStatus.unauthenticated) {
-      // Sign out. Fresh key so the onboarding's initState runs again, then
-      // clear every pushed route (settings, stubs, notes).
-      _wasAuthenticated = false;
-      _child = OnboardingScreen(key: UniqueKey());
-      dnLog('main: [router] signed out -> fresh OnboardingScreen');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) Navigator.popUntil(context, (r) => r.isFirst);
-      });
-    } else if (!_wasAuthenticated && status == AuthStatus.authenticated) {
-      _wasAuthenticated = true;
-      // A session that resolved after runApp. Upgrade the child only while
-      // nothing is pushed; once the user is navigating, the pushed routes
-      // own the screen.
-      if (!Navigator.canPop(context)) {
-        final target = _decideScreen();
-        if (target.runtimeType != _child.runtimeType) {
-          _child = target;
-          dnLog('main: [router] session resolved -> ${target.runtimeType}');
-        }
-      }
-    }
-    return _child!;
-  }
 }

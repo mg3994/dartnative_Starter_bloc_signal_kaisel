@@ -1,10 +1,11 @@
 import 'package:dartnative/dartnative.dart';
 
 import '../api/auth_service.dart';
+import '../packages/kaisel/kaisel.dart';
+import '../router.dart';
 import '../utils/constants.dart';
 import '../utils/shared_prefs.dart';
 import '../widgets/field_shell.dart';
-import 'home_screen.dart';
 
 /// New users land here after their first sign in: pick a name and a
 /// username, then enter the app. The profile is saved to the `profiles`
@@ -56,10 +57,7 @@ class _CreateProfileScreenState extends State<CreateProfileScreen> {
       await AuthService.saveProfile(name: name, username: username);
       await SharedPrefs.instance.setBool(kPrefOnboardingComplete, true);
       if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        PageRoute(builder: (_) => const HomeScreen(), settings: '/home'),
-      );
+      await context.replaceTop<AppRoute>(const HomeRoute());
     } catch (e) {
       dnLog('CreateProfileScreen: save failed: $e');
       if (!mounted) return;
@@ -103,8 +101,7 @@ class _CreateProfileScreenState extends State<CreateProfileScreen> {
                   hintText: 'Your name',
                   hintStyle: TextStyle(color: Color(0x66FFFFFF)),
                 ),
-                style:
-                    const TextStyle(color: Color(0xFFFFFFFF), fontSize: 17),
+                style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 17),
               ),
             ),
             const SizedBox(height: 20),
@@ -117,8 +114,7 @@ class _CreateProfileScreenState extends State<CreateProfileScreen> {
                   hintStyle: TextStyle(color: Color(0x66FFFFFF)),
                 ),
                 autocorrect: false,
-                style:
-                    const TextStyle(color: Color(0xFFFFFFFF), fontSize: 17),
+                style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 17),
               ),
             ),
             if (_error != null) ...[

@@ -7,6 +7,8 @@ import '../packages/kaisel_core/kaisel_core.dart';
 typedef KaiselPageBuilder<R extends KaiselRoute> =
     Widget Function(BuildContext context, R route);
 
+typedef KaiselBackHandler = Future<bool> Function(BuildContext context);
+
 /// A DartNative router host backed by [KaiselRouter].
 ///
 /// DartNative exposes an imperative Navigator rather than Flutter's
@@ -18,10 +20,12 @@ class KaiselRouterDelegate<R extends KaiselRoute> extends StatefulWidget {
     super.key,
     required this.router,
     required this.builder,
+    this.onBack,
   });
 
   final KaiselRouter<R> router;
   final KaiselPageBuilder<R> builder;
+  final KaiselBackHandler? onBack;
 
   @override
   State<KaiselRouterDelegate<R>> createState() =>
@@ -69,9 +73,11 @@ class _KaiselRouterDelegateState<R extends KaiselRoute>
         previous: entries.length > 1 ? entries[entries.length - 2].route : null,
         child: PopScope(
           canPop: false,
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop && widget.router.canPop) {
-              widget.router.pop();
+          onPopInvokedWithResult: (didPop, _) async {
+            if (didPop) return;
+            final handled = await widget.onBack?.call(context) ?? false;
+            if (!handled && widget.router.canPop) {
+              await widget.router.pop();
             }
           },
           child: page,
@@ -86,6 +92,7 @@ class KaiselRouterConfig<R extends KaiselRoute> {
   KaiselRouterConfig({
     required R initial,
     required this.builder,
+    this.onBack,
     List<KaiselGuard<R>> guards = const [],
     KaiselTransitionCallback<R>? onTransition,
   }) : router = KaiselRouter<R>(
@@ -96,10 +103,15 @@ class KaiselRouterConfig<R extends KaiselRoute> {
 
   final KaiselRouter<R> router;
   final KaiselPageBuilder<R> builder;
+  final KaiselBackHandler? onBack;
 
   /// The widget to pass to [runApp] or another DartNative widget tree.
-  Widget host({Key? key}) =>
-      KaiselRouterDelegate<R>(key: key, router: router, builder: builder);
+  Widget host({Key? key}) => KaiselRouterDelegate<R>(
+    key: key,
+    router: router,
+    builder: builder,
+    onBack: onBack,
+  );
 
   void dispose() => router.dispose();
 }
